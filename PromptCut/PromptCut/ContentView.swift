@@ -46,6 +46,7 @@ private let commandTemplates: [String] = [
 
 private struct GlassButtonModifier: ViewModifier {
     var prominent: Bool = false
+    @State private var isHovered = false
 
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
@@ -53,7 +54,9 @@ private struct GlassButtonModifier: ViewModifier {
                 .foregroundStyle(prominent ? Color.accentColor : Color.primary)
                 .fontWeight(prominent ? .semibold : .regular)
                 .background(
-                    prominent ? Color.accentColor.opacity(0.12) : Color.white.opacity(0.08),
+                    prominent
+                        ? Color.accentColor.opacity(isHovered ? 0.2 : 0.12)
+                        : Color.white.opacity(isHovered ? 0.16 : 0.08),
                     in: Capsule()
                 )
                 .overlay(
@@ -62,17 +65,23 @@ private struct GlassButtonModifier: ViewModifier {
                         lineWidth: 1
                     )
                 )
+                .animation(.easeInOut(duration: 0.15), value: isHovered)
+                .onHover { isHovered = $0 }
         } else if prominent {
             content
                 .foregroundStyle(Color.white)
-                .background(Color.accentColor, in: Capsule())
+                .background(Color.accentColor.opacity(isHovered ? 0.85 : 1), in: Capsule())
                 .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+                .animation(.easeInOut(duration: 0.15), value: isHovered)
+                .onHover { isHovered = $0 }
         } else {
             content
                 .foregroundStyle(Color.primary)
                 .background(.ultraThinMaterial, in: Capsule())
-                .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
+                .overlay(Capsule().stroke(Color.white.opacity(isHovered ? 0.3 : 0.15), lineWidth: 0.5))
                 .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
+                .animation(.easeInOut(duration: 0.15), value: isHovered)
+                .onHover { isHovered = $0 }
         }
     }
 }
@@ -184,14 +193,14 @@ struct ContentView: View {
 
                 Spacer()
 
-                Button("Discard changes") {
+                Button("Discard") {
                     editManager.discardChanges()
                 }
                 .disabled(!editManager.hasUnsavedChanges)
                 .foregroundStyle(.red)
                 .help("Discard all changes since last save")
 
-                Button("Save as new") {
+                Button("Save") {
                     saveFile()
                 }
                 .disabled(!editManager.hasUnsavedChanges)
@@ -216,7 +225,7 @@ struct ContentView: View {
                     .foregroundStyle(.primary)
                 Text("or")
                     .foregroundStyle(.secondary)
-                Button("Choose File…") { openFile() }
+                Button("Choose file") { openFile() }
                     .buttonStyle(.plain)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
