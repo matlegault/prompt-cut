@@ -17,6 +17,7 @@ class VideoEditManager: ObservableObject {
     @Published var duration: Double = 0
     @Published var previewImageURL: URL? = nil  // GIF / image output
     @Published var isAudioOnly: Bool = false     // audio-only output
+    @Published var videoSize: CGSize? = nil
 
     private var history: [URL] = []
     private var redoStack: [URL] = []
@@ -28,6 +29,7 @@ class VideoEditManager: ObservableObject {
     private let tempDir: URL
     private var timeObserver: Any?
     private var rateObserver: NSKeyValueObservation?
+    private var loadSizeTask: Task<Void, Never>?
 
     init() {
         let base = FileManager.default.temporaryDirectory
@@ -60,6 +62,7 @@ class VideoEditManager: ObservableObject {
         duration = 0
         previewImageURL = nil
         isAudioOnly = false
+        videoSize = nil
 
         let ext = url.pathExtension.isEmpty ? "mp4" : url.pathExtension
         let initial = tempDir.appendingPathComponent("v0.\(ext)")
@@ -67,6 +70,7 @@ class VideoEditManager: ObservableObject {
             try FileManager.default.copyItem(at: url, to: initial)
             history = [initial]
             replacePlayer(url: initial)
+            loadVideoSize(from: initial)
             isVideoLoaded = true
             hasUnsavedChanges = false
             loadedFilename = url.lastPathComponent
@@ -199,10 +203,26 @@ class VideoEditManager: ObservableObject {
         if Self.imageFormats.contains(ext) {
             previewImageURL = url
             isAudioOnly = false
+            if let img = NSImage(contentsOf: url) { videoSize = img.size }
         } else {
             replacePlayer(url: url)
             previewImageURL = nil
             isAudioOnly = Self.audioFormats.contains(ext)
+            if !isAudioOnly { loadVideoSize(from: url) }
+        }
+    }
+
+    private func loadVideoSize(from url: URL) {
+        loadSizeTask?.cancel()
+        loadSizeTask = Task {
+            let asset = AVURLAsset(url: url)
+            guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+                  !Task.isCancelled else { return }
+            let size = try? await track.load(.naturalSize)
+            let transform = try? await track.load(.preferredTransform)
+            guard !Task.isCancelled, let size, let transform else { return }
+            let transformed = size.applying(transform)
+            videoSize = CGSize(width: abs(transformed.width), height: abs(transformed.height))
         }
     }
 

@@ -151,6 +151,9 @@ struct ContentView: View {
             }
         }
         .ignoresSafeArea()
+        .onChange(of: editManager.videoSize) { _, size in
+            if let size { resizeWindowToFit(size) } else { (NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first)?.resizeIncrements = NSSize(width: 1, height: 1) }
+        }
         .onDrop(of: [UTType.movie], isTargeted: $isTargeted) { providers in
             loadDroppedVideo(from: providers)
         }
@@ -441,6 +444,24 @@ struct ContentView: View {
             guard response == .OK, let url = panel.url else { return }
             editManager.loadVideo(url: url)
         }
+    }
+
+    private func resizeWindowToFit(_ videoSize: CGSize) {
+        guard let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first,
+              let screen = window.screen ?? NSScreen.main else { return }
+        let aspect = videoSize.width / videoSize.height
+        let currentFrame = window.frame
+        var newWidth = floor(currentFrame.height * aspect)
+        // Clamp to screen width
+        let maxWidth = screen.visibleFrame.width
+        if newWidth > maxWidth { newWidth = maxWidth }
+        let newSize = CGSize(width: newWidth, height: currentFrame.height)
+        let newOrigin = CGPoint(
+            x: floor(currentFrame.midX - newWidth / 2),
+            y: currentFrame.minY
+        )
+        window.contentAspectRatio = videoSize
+        window.setFrame(NSRect(origin: newOrigin, size: newSize), display: true, animate: true)
     }
 
     private func saveFile() {
