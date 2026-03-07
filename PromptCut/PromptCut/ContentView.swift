@@ -44,6 +44,39 @@ private let commandTemplates: [String] = [
     "flip video vertical",
 ]
 
+private struct GlassButtonModifier: ViewModifier {
+    var prominent: Bool = false
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .foregroundStyle(prominent ? Color.accentColor : Color.primary)
+                .fontWeight(prominent ? .semibold : .regular)
+                .background(
+                    prominent ? Color.accentColor.opacity(0.12) : Color.white.opacity(0.08),
+                    in: Capsule()
+                )
+                .overlay(
+                    Capsule().stroke(
+                        prominent ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.2),
+                        lineWidth: 1
+                    )
+                )
+        } else if prominent {
+            content
+                .foregroundStyle(Color.white)
+                .background(Color.accentColor, in: Capsule())
+                .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+        } else {
+            content
+                .foregroundStyle(Color.primary)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().stroke(Color.white.opacity(0.15), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
+        }
+    }
+}
+
 struct ContentView: View {
     @StateObject private var editManager = VideoEditManager()
     @State private var commandText = ""
@@ -181,7 +214,10 @@ struct ContentView: View {
                 Text("or")
                     .foregroundStyle(.secondary)
                 Button("Choose File…") { openFile() }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .modifier(GlassButtonModifier())
             }
 
             RoundedRectangle(cornerRadius: 12)
