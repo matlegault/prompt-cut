@@ -11,6 +11,7 @@ class VideoEditManager: ObservableObject {
     @Published var canRedo = false
     @Published var hasUnsavedChanges = false
     @Published var isVideoLoaded = false
+    @Published var loadedFilename: String = "PromptCut"
 
     private var history: [URL] = []
     private var redoStack: [URL] = []
@@ -43,6 +44,7 @@ class VideoEditManager: ObservableObject {
             replacePlayer(url: initial)
             isVideoLoaded = true
             hasUnsavedChanges = false
+            loadedFilename = url.lastPathComponent
             updateState()
             statusMessage = "Ready — type a command below"
         } catch {

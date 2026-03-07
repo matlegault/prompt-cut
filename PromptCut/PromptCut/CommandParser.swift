@@ -95,14 +95,16 @@ enum CommandParser {
         }
 
         // ── trim / cut ───────────────────────────────────────────────────────
+        // Timestamp pattern accepts: 0:30  1:00:00  30  30s  1m  1m30s  1.5s  90
         if t.matches(#"^(?:trim|cut)\s+"#),
-           let start = t.capture(#"from\s+([\d:\.]+)"#),
-           let end   = t.capture(#"to\s+([\d:\.]+)"#) {
+           let start = t.capture(#"from\s+([\d:\.hms]+)"#),
+           let end   = t.capture(#"to\s+([\d:\.hms]+)"#) {
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
             // -ss before -i = input seeking: snaps to a keyframe so output starts clean (no black frames).
             // Use -t (duration) instead of -to because with input seeking -to is relative to output start.
-            let duration = String(format: "%.3f", timeToSeconds(end) - timeToSeconds(start))
-            return cmd(["-ss", start, "-i", inputPath, "-t", duration, "-c", "copy", "-reset_timestamps", "1", "-y", out])
+            let startSec   = String(format: "%.3f", timeToSeconds(start))
+            let duration   = String(format: "%.3f", timeToSeconds(end) - timeToSeconds(start))
+            return cmd(["-ss", startSec, "-i", inputPath, "-t", duration, "-c", "copy", "-reset_timestamps", "1", "-y", out])
         }
 
         // ── speed up ─────────────────────────────────────────────────────────
@@ -227,15 +229,44 @@ enum CommandParser {
         return "\(dir)/\(base)_output\(e)"
     }
 
-    /// Converts "H:M:S", "M:S", or "S" time strings to total seconds.
-    private static func timeToSeconds(_ time: String) -> Double {
-        let parts = time.components(separatedBy: ":").compactMap { Double($0) }
-        switch parts.count {
-        case 1: return parts[0]
-        case 2: return parts[0] * 60 + parts[1]
-        case 3: return parts[0] * 3600 + parts[1] * 60 + parts[2]
-        default: return 0
+    /// Converts many timestamp formats to total seconds.
+    /// Accepts: 0:30  1:00  1:30:00  30  90  30s  1m  1m30s  1h  1h30m15s  1.5s  500ms
+    static func timeToSeconds(_ time: String) -> Double {
+        let t = time.lowercased().trimmingCharacters(in: .whitespaces)
+
+        // Colon format: [H:]M:S[.ms]
+        if t.contains(":") {
+            let parts = t.components(separatedBy: ":").compactMap { Double($0) }
+            switch parts.count {
+            case 2: return parts[0] * 60 + parts[1]
+            case 3: return parts[0] * 3600 + parts[1] * 60 + parts[2]
+            default: return 0
+            }
         }
+
+        // Plain number → seconds
+        if let s = Double(t) { return s }
+
+        // Compound unit format: 1h30m15s, 1m30s, 30s, 500ms, 1h, etc.
+        var total = 0.0
+        // Order matters: "ms" before "m" and "s" to avoid partial matches
+        let pattern = #"(\d+(?:\.\d+)?)(ms|h|m|s)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return 0 }
+        let ns = t as NSString
+        let matches = regex.matches(in: t, range: NSRange(location: 0, length: ns.length))
+        for m in matches {
+            guard let vRange = Range(m.range(at: 1), in: t),
+                  let uRange = Range(m.range(at: 2), in: t),
+                  let value  = Double(t[vRange]) else { continue }
+            switch t[uRange] {
+            case "h":  total += value * 3600
+            case "m":  total += value * 60
+            case "s":  total += value
+            case "ms": total += value / 1000
+            default: break
+            }
+        }
+        return total
     }
 
     /// Builds a chain of atempo filters valid for any speed factor.

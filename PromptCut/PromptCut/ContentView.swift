@@ -7,11 +7,60 @@ import SwiftUI
 import AVKit
 import UniformTypeIdentifiers
 
+// MARK: - Command templates for typeahead
+
+private let commandTemplates: [String] = [
+    "trim video from [start] to [end]",
+    "cut video from [start] to [end]",
+    "convert video to gif",
+    "convert video to mp4",
+    "convert video to mp3",
+    "compress video to [size]mb",
+    "resize video to 720p",
+    "resize video to 1080p",
+    "resize video to 480p",
+    "resize video to [w]x[h]",
+    "scale video to 720p",
+    "speed up video by 2x",
+    "speed up video by [n]x",
+    "slow down video by 2x",
+    "slow down video by [n]x",
+    "reverse video",
+    "mute video",
+    "remove audio from video",
+    "extract audio from video",
+    "thumbnail video at [time]",
+    "screenshot video at [time]",
+    "rotate video by 90",
+    "rotate video by 180",
+    "rotate video by 270",
+    "crop video to [w]x[h]",
+    "fps video to [rate]",
+    "loop video [n] times",
+    "stabilize video",
+    "denoise video",
+    "grayscale video",
+    "flip video horizontal",
+    "flip video vertical",
+]
+
 struct ContentView: View {
     @StateObject private var editManager = VideoEditManager()
     @State private var commandText = ""
     @State private var showCheatSheet = false
     @State private var isTargeted = false
+    @State private var hoveredSuggestion: String? = nil
+
+    private var suggestions: [String] {
+        let query = commandText.trimmingCharacters(in: .whitespaces).lowercased()
+        // Hide suggestions once the user has typed an exact match (already selected one)
+        guard query.count >= 2,
+              !commandTemplates.contains(where: { $0.lowercased() == query }) else { return [] }
+        let words = query.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        return commandTemplates.filter { template in
+            words.allSatisfy { template.lowercased().contains($0) }
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,8 +85,17 @@ struct ContentView: View {
             Divider()
 
             // ── Command area ─────────────────────────────────────────────
-            VStack(alignment: .leading, spacing: 8) {
-                commandEditor
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    commandEditor
+
+                    Button("Apply") {
+                        applyEdit()
+                    }
+                    .disabled(!canApply)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.return, modifiers: .command)
+                }
 
                 HStack(spacing: 8) {
                     Text(editManager.statusMessage)
@@ -59,17 +117,11 @@ struct ContentView: View {
                     .sheet(isPresented: $showCheatSheet) {
                         CheatSheetView()
                     }
-
-                    Button("Apply Edit") {
-                        applyEdit()
-                    }
-                    .disabled(!canApply)
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.return, modifiers: .command)
                 }
             }
             .padding(12)
         }
+        .navigationTitle(editManager.loadedFilename)
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
                 Button(action: openFile) {
@@ -156,27 +208,52 @@ struct ContentView: View {
     }
 
     private var commandEditor: some View {
-        ZStack(alignment: .topLeading) {
-            TextEditor(text: $commandText)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 72, maxHeight: 120)
-                .scrollContentBackground(.hidden)
-                .background(Color(nsColor: .textBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
-                )
+        TextField("Type your edit in plain English…  e.g. trim video from 0:30 to 1:00", text: $commandText)
+            .font(.body)
+            .textFieldStyle(.roundedBorder)
+            .onSubmit { applyEdit() }
+            .overlay(alignment: .topLeading) {
+                // Floating suggestions popup, anchored to the top-left of the text field
+                // and offset upward so it floats above without shifting the layout.
+                if !suggestions.isEmpty {
+                    suggestionsPopup
+                        .alignmentGuide(.top)    { d in d[.bottom] + 4 }
+                        .alignmentGuide(.leading) { d in d[.leading] }
+                }
+            }
+    }
 
-            if commandText.isEmpty {
-                Text("Type your edit in plain English…\ne.g.  trim video from 0:30 to 1:00")
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(Color.secondary.opacity(0.45))
-                    .padding(.leading, 5)
-                    .padding(.top, 5)
-                    .allowsHitTesting(false)
+    private var suggestionsPopup: some View {
+        VStack(spacing: 0) {
+            ForEach(suggestions.prefix(6), id: \.self) { suggestion in
+                Button {
+                    commandText = suggestion
+                    hoveredSuggestion = nil
+                } label: {
+                    Text(suggestion)
+                        .font(.body)
+                        .foregroundStyle(hoveredSuggestion == suggestion ? .white : .primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(hoveredSuggestion == suggestion ? Color.accentColor : Color.clear)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { isHovered in hoveredSuggestion = isHovered ? suggestion : nil }
+
+                if suggestion != suggestions.prefix(6).last {
+                    Divider()
+                }
             }
         }
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.15), lineWidth: 1))
+        .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
+        .frame(minWidth: 300)
+        .fixedSize(horizontal: false, vertical: true)
+        .offset(y: -CGFloat(min(suggestions.count, 6)) * 31 - 8)
     }
 
     // MARK: - Helpers
