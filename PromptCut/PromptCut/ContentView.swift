@@ -159,15 +159,15 @@ struct ContentView: View {
         }
         .navigationTitle(editManager.loadedFilename)
         .toolbar {
-            ToolbarItemGroup(placement: .automatic) {
+            ToolbarItemGroup(placement: .navigation) {
                 Button(action: openFile) {
-                    Label("Open Video", systemImage: "folder.badge.plus")
+                    Label("Open Video", systemImage: "plus")
                 }
                 .help("Open Video (⌘O)")
                 .keyboardShortcut("o", modifiers: .command)
+            }
 
-                Divider()
-
+            ToolbarItemGroup(placement: .automatic) {
                 Button(action: editManager.undo) {
                     Label("Undo", systemImage: "arrow.uturn.backward")
                 }
@@ -184,14 +184,14 @@ struct ContentView: View {
 
                 Spacer()
 
-                Button("Discard") {
+                Button("Discard changes") {
                     editManager.discardChanges()
                 }
                 .disabled(!editManager.hasUnsavedChanges)
                 .foregroundStyle(.red)
                 .help("Discard all changes since last save")
 
-                Button("Save…") {
+                Button("Save as new") {
                     saveFile()
                 }
                 .disabled(!editManager.hasUnsavedChanges)
