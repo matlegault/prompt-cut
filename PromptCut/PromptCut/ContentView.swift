@@ -396,7 +396,7 @@ struct ContentView: View {
     }
 
     private var commandEditor: some View {
-        TextField("Type your edit in plain English…  e.g. trim video from 0:30 to 1:00", text: $commandText)
+        TextField("Type your edit in natural language…  e.g. trim video from 0:30 to 1:00", text: $commandText)
             .font(.body)
             .textFieldStyle(.roundedBorder)
             .onChange(of: commandText) { selectedSuggestionIndex = nil }
