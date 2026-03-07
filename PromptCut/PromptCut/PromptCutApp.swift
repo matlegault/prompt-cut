@@ -2,8 +2,6 @@
 //  PromptCutApp.swift
 //  PromptCut
 //
-//  Created by Mathieu Legault on 2026-03-07.
-//
 
 import SwiftUI
 
@@ -12,6 +10,12 @@ struct PromptCutApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 800, height: 640)
+        .commands {
+            // Remove the default New Window command
+            CommandGroup(replacing: .newItem) {}
         }
     }
 }

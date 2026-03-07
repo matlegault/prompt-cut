@@ -8,6 +8,7 @@
 
 /* Begin PBXFileReference section */
 		4EAF7CDB2F5C914E00E54620 /* PromptCut.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PromptCut.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4EAF7CF82F5C993800E54620 /* ffmpeg */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; path = ffmpeg; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -32,6 +33,7 @@
 		4EAF7CD22F5C914E00E54620 = {
 			isa = PBXGroup;
 			children = (
+				4EAF7CF82F5C993800E54620 /* ffmpeg */,
 				4EAF7CDD2F5C914E00E54620 /* PromptCut */,
 				4EAF7CDC2F5C914E00E54620 /* Products */,
 			);
