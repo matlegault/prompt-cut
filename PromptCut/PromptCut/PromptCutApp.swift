@@ -11,6 +11,7 @@ struct PromptCutApp: App {
         WindowGroup {
             ContentView()
         }
+        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
         .defaultSize(width: 800, height: 640)
         .commands {

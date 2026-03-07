@@ -12,17 +12,37 @@ class VideoEditManager: ObservableObject {
     @Published var hasUnsavedChanges = false
     @Published var isVideoLoaded = false
     @Published var loadedFilename: String = "PromptCut"
+    @Published var isPlaying = false
+    @Published var currentTime: Double = 0
+    @Published var duration: Double = 0
+    @Published var previewImageURL: URL? = nil  // GIF / image output
+    @Published var isAudioOnly: Bool = false     // audio-only output
 
     private var history: [URL] = []
     private var redoStack: [URL] = []
     private var currentURL: URL? { history.last }
 
+    /// The file that should be offered for saving — GIF/image uses previewImageURL, otherwise the video.
+    var currentOutputURL: URL? { previewImageURL ?? currentURL }
+
     private let tempDir: URL
+    private var timeObserver: Any?
+    private var rateObserver: NSKeyValueObservation?
 
     init() {
         let base = FileManager.default.temporaryDirectory
+        // Clean up any leftover temp dirs from previous sessions
+        if let contents = try? FileManager.default.contentsOfDirectory(at: base, includingPropertiesForKeys: nil) {
+            for url in contents where url.lastPathComponent.hasPrefix("PromptCut-") {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
         tempDir = base.appendingPathComponent("PromptCut-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: tempDir)
     }
 
     // MARK: - Load
@@ -35,6 +55,11 @@ class VideoEditManager: ObservableObject {
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         history = []
         redoStack = []
+        isPlaying = false
+        currentTime = 0
+        duration = 0
+        previewImageURL = nil
+        isAudioOnly = false
 
         let ext = url.pathExtension.isEmpty ? "mp4" : url.pathExtension
         let initial = tempDir.appendingPathComponent("v0.\(ext)")
@@ -46,10 +71,26 @@ class VideoEditManager: ObservableObject {
             hasUnsavedChanges = false
             loadedFilename = url.lastPathComponent
             updateState()
-            statusMessage = "Ready — type a command below"
+            statusMessage = "Ready — type a command to start"
         } catch {
             statusMessage = "Failed to load: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Playback
+
+    func togglePlayback() {
+        guard let player else { return }
+        if player.rate > 0 { player.pause() } else { player.play() }
+    }
+
+    func seek(to seconds: Double) {
+        currentTime = seconds
+        player?.seek(
+            to: CMTime(seconds: seconds, preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        )
     }
 
     // MARK: - Apply command
@@ -76,15 +117,16 @@ class VideoEditManager: ObservableObject {
 
             if exitCode == 0 {
                 let produced = URL(fileURLWithPath: cmd.outputPath)
+                let ext = produced.pathExtension.lowercased()
                 let nextIndex = history.count
-                let stateURL = tempDir.appendingPathComponent("v\(nextIndex).\(produced.pathExtension)")
+                let stateURL = tempDir.appendingPathComponent("v\(nextIndex).\(ext)")
 
                 if produced.path != stateURL.path {
                     try FileManager.default.moveItem(at: produced, to: stateURL)
                 }
                 redoStack = []
                 history.append(stateURL)
-                replacePlayer(url: stateURL)
+                updatePlayerState(for: stateURL)
                 hasUnsavedChanges = true
                 statusMessage = "Done!"
             } else {
@@ -103,7 +145,7 @@ class VideoEditManager: ObservableObject {
     func undo() {
         guard history.count > 1 else { return }
         redoStack.append(history.removeLast())
-        replacePlayer(url: history.last!)
+        updatePlayerState(for: history.last!)
         hasUnsavedChanges = history.count > 1
         updateState()
         statusMessage = "Undone"
@@ -113,7 +155,7 @@ class VideoEditManager: ObservableObject {
         guard !redoStack.isEmpty else { return }
         let next = redoStack.removeLast()
         history.append(next)
-        replacePlayer(url: next)
+        updatePlayerState(for: next)
         hasUnsavedChanges = true
         updateState()
         statusMessage = "Redone"
@@ -125,14 +167,19 @@ class VideoEditManager: ObservableObject {
         for url in toDelete { try? FileManager.default.removeItem(at: url) }
         history = [first]
         redoStack = []
-        replacePlayer(url: first)
+        updatePlayerState(for: first)
         hasUnsavedChanges = false
         updateState()
         statusMessage = "Changes discarded"
     }
 
+    func markSaved() {
+        hasUnsavedChanges = false
+        statusMessage = "Saved!"
+    }
+
     func saveResult(to url: URL) throws {
-        guard let current = currentURL else { return }
+        guard let current = currentOutputURL else { return }
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
@@ -143,18 +190,55 @@ class VideoEditManager: ObservableObject {
 
     // MARK: - Private helpers
 
+    private static let imageFormats: Set<String> = ["gif", "jpg", "jpeg", "png", "webp"]
+    private static let audioFormats: Set<String> = ["mp3", "wav", "aac", "flac", "ogg", "m4a"]
+
+    /// Routes a URL to the right preview mode: image viewer, audio player, or video player.
+    private func updatePlayerState(for url: URL) {
+        let ext = url.pathExtension.lowercased()
+        if Self.imageFormats.contains(ext) {
+            previewImageURL = url
+            isAudioOnly = false
+        } else {
+            replacePlayer(url: url)
+            previewImageURL = nil
+            isAudioOnly = Self.audioFormats.contains(ext)
+        }
+    }
+
     private func replacePlayer(url: URL) {
         let item = AVPlayerItem(url: url)
         if let p = player {
             p.replaceCurrentItem(with: item)
         } else {
             player = AVPlayer(playerItem: item)
+
+            // Periodic time observer — added once per player instance
+            timeObserver = player!.addPeriodicTimeObserver(
+                forInterval: CMTime(value: 1, timescale: 30),
+                queue: .main
+            ) { [weak self] time in
+                guard let self else { return }
+                let s = time.seconds
+                if s.isFinite { self.currentTime = s }
+            }
+
+            // Rate observer — tracks play/pause state
+            rateObserver = player!.observe(\.rate, options: .new) { [weak self] p, _ in
+                DispatchQueue.main.async { self?.isPlaying = p.rate > 0 }
+            }
         }
-        // Seek to start only once the item is ready, avoiding black frames during buffering
+
+        // Duration + seek-to-start when item becomes ready
         var token: NSKeyValueObservation?
         token = item.observe(\.status, options: .new) { [weak self] item, _ in
             guard item.status == .readyToPlay else { return }
-            self?.player?.seek(to: .zero)
+            DispatchQueue.main.async {
+                let d = item.duration.seconds
+                if d.isFinite && d > 0 { self?.duration = d }
+                self?.currentTime = 0
+                self?.player?.seek(to: .zero)
+            }
             token?.invalidate()
         }
     }
