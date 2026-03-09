@@ -6,6 +6,7 @@ import Combine
 class VideoEditManager: ObservableObject {
     @Published var player: AVPlayer?
     @Published var isProcessing = false
+    @Published var progress: Double = 0   // 0…1 during processing
     @Published var statusMessage = "Load a video to get started"
     @Published var canUndo = false
     @Published var canRedo = false
@@ -106,6 +107,7 @@ class VideoEditManager: ObservableObject {
         guard !trimmed.isEmpty else { return }
 
         isProcessing = true
+        progress = 0
         statusMessage = "Processing…"
 
         do {
@@ -117,7 +119,12 @@ class VideoEditManager: ObservableObject {
                 return
             }
 
-            let (output, exitCode) = await runProcess(ffmpegPath, args: cmd.args, in: tempDir)
+            let totalDuration = duration  // captured for progress calc
+            let (output, exitCode) = await runProcess(ffmpegPath, args: cmd.args, in: tempDir) { [weak self] timeSeconds in
+                guard let self, totalDuration > 0 else { return }
+                let pct = min(timeSeconds / totalDuration, 1.0)
+                Task { @MainActor in self.progress = pct }
+            }
 
             if exitCode == 0 {
                 let produced = URL(fileURLWithPath: cmd.outputPath)
@@ -283,7 +290,12 @@ class VideoEditManager: ObservableObject {
         return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
 
-    private func runProcess(_ executable: String, args: [String], in directory: URL) async -> (String, Int32) {
+    private func runProcess(
+        _ executable: String,
+        args: [String],
+        in directory: URL,
+        onProgress: (@Sendable (Double) -> Void)? = nil
+    ) async -> (String, Int32) {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
@@ -291,21 +303,63 @@ class VideoEditManager: ObservableObject {
                 process.arguments = args
                 process.currentDirectoryURL = directory
 
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = pipe
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                process.standardOutput = outPipe
+                process.standardError = errPipe
+
+                var collectedOutput = Data()
+
+                // Stream stderr to parse FFmpeg progress lines
+                errPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let chunk = handle.availableData
+                    guard !chunk.isEmpty else { return }
+                    collectedOutput.append(chunk)
+
+                    if let text = String(data: chunk, encoding: .utf8) {
+                        // FFmpeg outputs lines like: frame=  123 fps= 30 ... time=00:01:23.45 ...
+                        for line in text.components(separatedBy: "\r") {
+                            if let range = line.range(of: "time=") {
+                                let after = String(line[range.upperBound...])
+                                let timeStr = after.prefix(while: { $0 != " " && $0 != "\n" })
+                                if let seconds = Self.parseFFmpegTime(String(timeStr)) {
+                                    onProgress?(seconds)
+                                }
+                            }
+                        }
+                    }
+                }
 
                 do {
                     try process.run()
                     process.waitUntilExit()
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    let output = String(data: data, encoding: .utf8) ?? ""
+                    errPipe.fileHandleForReading.readabilityHandler = nil
+                    let remaining = errPipe.fileHandleForReading.readDataToEndOfFile()
+                    collectedOutput.append(remaining)
+                    let stdoutData = outPipe.fileHandleForReading.readDataToEndOfFile()
+                    collectedOutput.append(stdoutData)
+                    let output = String(data: collectedOutput, encoding: .utf8) ?? ""
                     continuation.resume(returning: (output, process.terminationStatus))
                 } catch {
+                    errPipe.fileHandleForReading.readabilityHandler = nil
                     continuation.resume(returning: (error.localizedDescription, -1))
                 }
             }
         }
+    }
+
+    /// Parses FFmpeg time strings like "00:01:23.45" or "01:23.45" into seconds.
+    private static func parseFFmpegTime(_ str: String) -> Double? {
+        let parts = str.split(separator: ":")
+        guard parts.count >= 2 else { return nil }
+        if parts.count == 3,
+           let h = Double(parts[0]), let m = Double(parts[1]), let s = Double(parts[2]) {
+            return h * 3600 + m * 60 + s
+        } else if parts.count == 2,
+                  let m = Double(parts[0]), let s = Double(parts[1]) {
+            return m * 60 + s
+        }
+        return nil
     }
 
     private func extractError(_ output: String) -> String {

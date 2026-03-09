@@ -249,9 +249,13 @@ struct ContentView: View {
         ZStack {
             Rectangle().fill(.ultraThinMaterial)
             VStack(spacing: 12) {
-                ProgressView().scaleEffect(1.4)
-                Text("Processing…")
-                    .font(.callout)
+                ProgressView(value: editManager.progress)
+                    .progressViewStyle(.linear)
+                    .frame(width: 160)
+                Text(editManager.progress > 0
+                     ? "\(Int(editManager.progress * 100))%"
+                     : "Processing…")
+                    .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
         }
