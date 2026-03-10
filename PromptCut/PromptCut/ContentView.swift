@@ -133,25 +133,32 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            // ── Processing overlay ────────────────────────────────────────
+            // ── Processing overlay (between video and controls) ──────────
             if editManager.isProcessing {
                 processingOverlay
             }
 
-            // ── Floating glass bar (slides up when video is loaded) ───────
+            // ── Floating glass bar + timeline (slides up when video is loaded) ───────
             if editManager.isVideoLoaded {
-                floatingBar
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 20)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .animation(.spring(duration: 0.3), value: editManager.isVideoLoaded)
+                VStack(spacing: 8) {
+                    if editManager.isMergeMode && !editManager.isProcessing {
+                        TimelineView(editManager: editManager)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    floatingBar
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .animation(.spring(duration: 0.3), value: editManager.isVideoLoaded)
+                .animation(.spring(duration: 0.3), value: editManager.isMergeMode)
             }
 
             // ── Suggestions panel (above the command row, always on top) ──
             if editManager.isVideoLoaded && !suggestions.isEmpty {
                 suggestionsPanel
                     .padding(.leading, 32)
-                    .padding(.bottom, 88)
+                    .padding(.bottom, editManager.isMergeMode ? 220 : 88)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -172,42 +179,53 @@ struct ContentView: View {
                 }
                 .help("Open Video (⌘O)")
                 .keyboardShortcut("o", modifiers: .command)
+
+                if editManager.isVideoLoaded {
+                    Button {
+                        editManager.startOver()
+                    } label: {
+                        Label("Start Over", systemImage: "arrow.counterclockwise")
+                    }
+                    .help("Start over with a new video")
+                }
             }
 
             ToolbarItemGroup(placement: .automatic) {
-                Button(action: editManager.undo) {
-                    Label("Undo", systemImage: "arrow.uturn.backward")
-                }
-                .disabled(!editManager.canUndo)
-                .help("Undo (⌘Z)")
-                .keyboardShortcut("z", modifiers: .command)
-
-                Button(action: editManager.redo) {
-                    Label("Redo", systemImage: "arrow.uturn.forward")
-                }
-                .disabled(!editManager.canRedo)
-                .help("Redo (⌘⇧Z)")
-                .keyboardShortcut("z", modifiers: [.command, .shift])
-
-                Spacer()
-
-                Button(editManager.isProcessing ? "Cancel" : "Discard") {
-                    if editManager.isProcessing {
-                        editManager.cancelProcessing()
-                    } else {
-                        editManager.discardChanges()
+                if editManager.isVideoLoaded {
+                    Button(action: editManager.undo) {
+                        Label("Undo", systemImage: "arrow.uturn.backward")
                     }
-                }
-                .disabled(!editManager.hasUnsavedChanges && !editManager.isProcessing)
-                .foregroundStyle(.red)
-                .help(editManager.isProcessing ? "Cancel current operation" : "Discard all changes since last save")
+                    .disabled(!editManager.canUndo)
+                    .help("Undo (⌘Z)")
+                    .keyboardShortcut("z", modifiers: .command)
 
-                Button("Save") {
-                    saveFile()
+                    Button(action: editManager.redo) {
+                        Label("Redo", systemImage: "arrow.uturn.forward")
+                    }
+                    .disabled(!editManager.canRedo)
+                    .help("Redo (⌘⇧Z)")
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+
+                    Spacer()
+
+                    Button(editManager.isProcessing ? "Cancel" : "Discard") {
+                        if editManager.isProcessing {
+                            editManager.cancelProcessing()
+                        } else {
+                            editManager.discardChanges()
+                        }
+                    }
+                    .disabled(!editManager.hasUnsavedChanges && !editManager.isProcessing)
+                    .foregroundStyle(.red)
+                    .help(editManager.isProcessing ? "Cancel current operation" : "Discard all changes since last save")
+
+                    Button("Save") {
+                        saveFile()
                 }
                 .disabled(!editManager.hasUnsavedChanges)
                 .buttonStyle(.borderedProminent)
                 .help("Save edited video")
+                }
             }
         }
     }
@@ -507,10 +525,18 @@ struct ContentView: View {
             panel.allowedContentTypes = [.movie, .video]
             panel.canChooseFiles = true
             panel.canChooseDirectories = false
-            panel.message = "Choose a video file to edit"
+            panel.allowsMultipleSelection = editManager.isVideoLoaded
+            panel.message = editManager.isVideoLoaded ? "Choose video clips to add" : "Choose a video file to edit"
             let response = await panel.begin()
-            guard response == .OK, let url = panel.url else { return }
-            editManager.loadVideo(url: url)
+            guard response == .OK else { return }
+
+            if editManager.isVideoLoaded {
+                for url in panel.urls {
+                    editManager.addClip(url: url)
+                }
+            } else if let url = panel.url {
+                editManager.loadVideo(url: url)
+            }
         }
     }
 
@@ -555,24 +581,33 @@ struct ContentView: View {
     }
 
     private func loadDroppedVideo(from providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.movie.identifier) }) else {
-            return false
-        }
-        provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, error in
-            guard let url else {
-                if let error {
+        let movieProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.movie.identifier) }
+        guard !movieProviders.isEmpty else { return false }
+
+        let isAlreadyLoaded = editManager.isVideoLoaded
+
+        for (index, provider) in movieProviders.enumerated() {
+            provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, error in
+                guard let url else {
+                    if let error {
+                        Task { @MainActor in editManager.statusMessage = "Drop failed: \(error.localizedDescription)" }
+                    }
+                    return
+                }
+                let dest = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("\(UUID().uuidString)_\(url.lastPathComponent)")
+                do {
+                    try FileManager.default.copyItem(at: url, to: dest)
+                    Task { @MainActor in
+                        if !isAlreadyLoaded && index == 0 {
+                            editManager.loadVideo(url: dest)
+                        } else {
+                            editManager.addClip(url: dest)
+                        }
+                    }
+                } catch {
                     Task { @MainActor in editManager.statusMessage = "Drop failed: \(error.localizedDescription)" }
                 }
-                return
-            }
-            // Copy to a unique temp path so loadVideo can access it
-            let dest = FileManager.default.temporaryDirectory
-                .appendingPathComponent("\(UUID().uuidString)_\(url.lastPathComponent)")
-            do {
-                try FileManager.default.copyItem(at: url, to: dest)
-                Task { @MainActor in editManager.loadVideo(url: dest) }
-            } catch {
-                Task { @MainActor in editManager.statusMessage = "Drop failed: \(error.localizedDescription)" }
             }
         }
         return true

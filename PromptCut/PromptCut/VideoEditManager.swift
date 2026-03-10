@@ -1,12 +1,27 @@
 import Foundation
 import AVKit
 import Combine
+import SwiftUI
+
+// MARK: - Clip model for merge timeline
+
+struct VideoClip: Identifiable {
+    let id = UUID()
+    var url: URL
+    var filename: String
+    var duration: Double
+    var thumbnail: NSImage?
+}
 
 @MainActor
 class VideoEditManager: ObservableObject {
     @Published var player: AVPlayer?
-    @Published var isProcessing = false
-    @Published var progress: Double = 0   // 0…1 during processing
+    @Published var isProcessing = false {
+        didSet { if !isProcessing { DockProgress.clear() } }
+    }
+    @Published var progress: Double = 0 {  // 0…1 during processing
+        didSet { DockProgress.update(progress) }
+    }
     @Published var statusMessage = "Load a video to get started"
     @Published var canUndo = false
     @Published var canRedo = false
@@ -22,6 +37,10 @@ class VideoEditManager: ObservableObject {
     @Published var videoFPS: Double? = nil
     @Published var lastLog: String? = nil       // full ffmpeg output from last command
     @Published var fileInfo: String? = nil        // e.g. "1920×1080 · 30fps · 12.4 MB"
+
+    // MARK: - Merge state
+    @Published var clips: [VideoClip] = []
+    var isMergeMode: Bool { clips.count > 1 }
 
     private var history: [URL] = []
     private var redoStack: [URL] = []
@@ -84,6 +103,8 @@ class VideoEditManager: ObservableObject {
             isVideoLoaded = true
             hasUnsavedChanges = false
             loadedFilename = url.lastPathComponent
+
+            resetClipsToCurrentVideo()
             updateState()
             statusMessage = "Ready — type a command to start"
         } catch {
@@ -179,6 +200,7 @@ class VideoEditManager: ObservableObject {
         redoStack.append(history.removeLast())
         updatePlayerState(for: history.last!)
         hasUnsavedChanges = history.count > 1
+        resetClipsToCurrentVideo()
         updateState()
         statusMessage = "Undone"
     }
@@ -189,6 +211,7 @@ class VideoEditManager: ObservableObject {
         history.append(next)
         updatePlayerState(for: next)
         hasUnsavedChanges = true
+        resetClipsToCurrentVideo()
         updateState()
         statusMessage = "Redone"
     }
@@ -201,6 +224,34 @@ class VideoEditManager: ObservableObject {
         process.terminate()
     }
 
+    func startOver() {
+        let toDelete = history + redoStack
+        for url in toDelete { try? FileManager.default.removeItem(at: url) }
+        history = []
+        redoStack = []
+        clips = []
+        player?.pause()
+        if let obs = timeObserver { player?.removeTimeObserver(obs); timeObserver = nil }
+        rateObserver?.invalidate(); rateObserver = nil
+        itemStatusObserver?.invalidate(); itemStatusObserver = nil
+        player = nil
+        isVideoLoaded = false
+        isPlaying = false
+        currentTime = 0
+        duration = 0
+        previewImageURL = nil
+        isAudioOnly = false
+        videoSize = nil
+        videoFPS = nil
+        fileInfo = nil
+        lastLog = nil
+        loadedFilename = "PromptCut"
+        hasUnsavedChanges = false
+        canUndo = false
+        canRedo = false
+        statusMessage = "Load a video to get started"
+    }
+
     func discardChanges() {
         guard let first = history.first else { return }
         let toDelete = Array(history.dropFirst()) + redoStack
@@ -209,6 +260,7 @@ class VideoEditManager: ObservableObject {
         redoStack = []
         updatePlayerState(for: first)
         hasUnsavedChanges = false
+        resetClipsToCurrentVideo()
         updateState()
         statusMessage = "Changes discarded"
     }
@@ -226,6 +278,227 @@ class VideoEditManager: ObservableObject {
         try FileManager.default.copyItem(at: current, to: url)
         hasUnsavedChanges = false
         statusMessage = "Saved!"
+    }
+
+    // MARK: - Merge / Timeline
+
+    func addClip(url: URL) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+
+        let ext = url.pathExtension.isEmpty ? "mp4" : url.pathExtension
+        let clipFile = tempDir.appendingPathComponent("clip-\(UUID().uuidString).\(ext)")
+        do {
+            try FileManager.default.copyItem(at: url, to: clipFile)
+        } catch {
+            statusMessage = "Failed to add clip: \(error.localizedDescription)"
+            return
+        }
+
+        let clip = VideoClip(url: clipFile, filename: url.lastPathComponent, duration: 0, thumbnail: nil)
+        clips.append(clip)
+
+        // Load duration + thumbnail async
+        let clipID = clip.id
+        Task {
+            let asset = AVURLAsset(url: clipFile)
+            let dur = (try? await asset.load(.duration).seconds) ?? 0
+            let thumb = await Self.generateThumbnail(for: clipFile)
+            if let idx = clips.firstIndex(where: { $0.id == clipID }) {
+                clips[idx].duration = dur
+                clips[idx].thumbnail = thumb
+            }
+        }
+
+        statusMessage = "Added clip — \(clips.count) clips in timeline"
+    }
+
+    func removeClip(id: UUID) {
+        guard let idx = clips.firstIndex(where: { $0.id == id }) else { return }
+        let removed = clips.remove(at: idx)
+        try? FileManager.default.removeItem(at: removed.url)
+
+        if clips.isEmpty {
+            // All clips removed — nothing to show
+            statusMessage = "Load a video to get started"
+        } else if clips.count == 1 {
+            // Back to single-clip mode — reload it as the main video
+            loadVideo(url: clips[0].url)
+            statusMessage = "Back to single video mode"
+        } else {
+            statusMessage = "\(clips.count) clips in timeline"
+        }
+    }
+
+    func reorderClips(from source: IndexSet, to destination: Int) {
+        clips.move(fromOffsets: source, toOffset: destination)
+    }
+
+    func previewClip(_ clip: VideoClip) {
+        replacePlayer(url: clip.url)
+        previewImageURL = nil
+        isAudioOnly = false
+        loadVideoSize(from: clip.url)
+    }
+
+    func executeMerge() async {
+        guard clips.count > 1 else { return }
+
+        guard let ffmpegPath = findFFmpeg() else {
+            statusMessage = "ffmpeg not found. Run: brew install ffmpeg"
+            return
+        }
+
+        isProcessing = true
+        wasCancelled = false
+        progress = 0
+        statusMessage = "Merging \(clips.count) clips…"
+
+        let outputFile = tempDir.appendingPathComponent("merged_output.mp4")
+        try? FileManager.default.removeItem(at: outputFile)
+
+        let totalDuration = clips.reduce(0.0) { $0 + $1.duration }
+        let n = clips.count
+
+        // Probe each clip for audio presence
+        var hasAudio: [Bool] = []
+        for clip in clips {
+            let asset = AVURLAsset(url: clip.url)
+            let audioTracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+            hasAudio.append(!audioTracks.isEmpty)
+        }
+
+        // Determine target resolution from first clip (or fallback to 1280x720)
+        let targetW: Int
+        let targetH: Int
+        if let size = videoSize {
+            // Use even dimensions
+            targetW = Int(size.width) / 2 * 2
+            targetH = Int(size.height) / 2 * 2
+        } else {
+            targetW = 1280
+            targetH = 720
+        }
+
+        // Build inputs — add an anullsrc input for generating silence
+        var inputArgs = clips.flatMap { ["-i", $0.url.path] }
+        // Extra input at index [n]: silent audio source
+        let needsSilence = hasAudio.contains(false)
+        if needsSilence {
+            inputArgs += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+        }
+        let silenceIdx = n  // index of the anullsrc input
+
+        // Build filter graph
+        var filterParts: [String] = []
+
+        // Video: scale all to target resolution, normalize fps and pixel format
+        for i in 0..<n {
+            filterParts.append("[\(i):v:0]scale=\(targetW):\(targetH):force_original_aspect_ratio=decrease,pad=\(targetW):\(targetH):(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=nv12[\(i)v]")
+        }
+
+        // Audio: use real audio or trimmed silence for each clip
+        for i in 0..<n {
+            if hasAudio[i] {
+                filterParts.append("[\(i):a:0]aformat=sample_rates=44100:channel_layouts=stereo[\(i)a]")
+            } else {
+                // Trim silence to match clip duration
+                let dur = String(format: "%.3f", clips[i].duration)
+                filterParts.append("[\(silenceIdx)]atrim=0:\(dur),asetpts=PTS-STARTPTS[\(i)a]")
+            }
+        }
+
+        // Concat
+        let videoConcat = (0..<n).map { "[\($0)v]" }.joined()
+        let audioConcat = (0..<n).map { "[\($0)a]" }.joined()
+        filterParts.append("\(videoConcat)concat=n=\(n):v=1:a=0[outv]")
+        filterParts.append("\(audioConcat)concat=n=\(n):v=0:a=1[outa]")
+
+        let fullFilter = filterParts.joined(separator: ";")
+
+        let args = ["-threads", "0"] + inputArgs +
+            ["-filter_complex", fullFilter,
+             "-map", "[outv]", "-map", "[outa]",
+             "-c:v", "h264_videotoolbox", "-b:v", "\(sourceBitrateKbps ?? 8000)k",
+             "-c:a", "aac", "-b:a", "192k",
+             "-movflags", "+faststart",
+             "-y", outputFile.path]
+
+        let (output, exitCode) = await runProcess(ffmpegPath, args: args, in: tempDir) { [weak self] timeSeconds in
+            guard let self, totalDuration > 0 else { return }
+            let pct = min(timeSeconds / totalDuration, 1.0)
+            Task { @MainActor in self.progress = pct }
+        }
+
+        lastLog = output
+
+        if exitCode == 0 {
+            finishMerge(outputFile: outputFile)
+        } else if wasCancelled {
+            try? FileManager.default.removeItem(at: outputFile)
+            statusMessage = "Cancelled"
+        } else {
+            statusMessage = "Merge failed: \(extractError(output))"
+        }
+
+        isProcessing = false
+        updateState()
+    }
+
+    private func finishMerge(outputFile: URL) {
+        let ext = outputFile.pathExtension
+        let nextIndex = history.count
+        let stateURL = tempDir.appendingPathComponent("v\(nextIndex).\(ext)")
+        // Clean up redo stack files before moving, since merge invalidates redo history
+        for redoURL in redoStack {
+            try? FileManager.default.removeItem(at: redoURL)
+        }
+        redoStack = []
+
+        do {
+            if outputFile.path != stateURL.path {
+                try? FileManager.default.removeItem(at: stateURL)
+                try FileManager.default.moveItem(at: outputFile, to: stateURL)
+            }
+        } catch {
+            statusMessage = "Failed to save merge result: \(error.localizedDescription)"
+            return
+        }
+        history.append(stateURL)
+        updatePlayerState(for: stateURL)
+        hasUnsavedChanges = true
+
+        // Back to single-video mode with the merged result as the sole clip
+        resetClipsToCurrentVideo()
+        statusMessage = "Merged!"
+    }
+
+    /// Resets the clips array to contain only the current video, so subsequent
+    /// drops correctly enter merge mode again.
+    private func resetClipsToCurrentVideo() {
+        guard let url = currentURL else { clips = []; return }
+        let clip = VideoClip(url: url, filename: loadedFilename, duration: 0, thumbnail: nil)
+        clips = [clip]
+        let clipID = clip.id
+        Task {
+            let asset = AVURLAsset(url: url)
+            let dur = (try? await asset.load(.duration).seconds) ?? 0
+            let thumb = await Self.generateThumbnail(for: url)
+            if let idx = self.clips.firstIndex(where: { $0.id == clipID }) {
+                self.clips[idx].duration = dur
+                self.clips[idx].thumbnail = thumb
+            }
+        }
+    }
+
+    nonisolated static func generateThumbnail(for url: URL) async -> NSImage? {
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 160, height: 90)
+        let time = CMTime(seconds: 1, preferredTimescale: 600)
+        guard let cgImage = try? await generator.image(at: time).image else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
     // MARK: - Private helpers

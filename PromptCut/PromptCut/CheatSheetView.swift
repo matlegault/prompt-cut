@@ -30,6 +30,7 @@ private let commands: [CheatCommand] = [
     CheatCommand(category: "Stabilize", syntax: "stabilize video",                         example: "stabilize video"),
     CheatCommand(category: "Denoise",   syntax: "denoise video",                           example: "denoise video"),
     CheatCommand(category: "Grayscale", syntax: "grayscale video",                         example: "grayscale video"),
+    CheatCommand(category: "Merge",     syntax: "Drop additional videos to merge",           example: "Drag & drop → reorder → Merge"),
 ]
 
 struct CheatSheetView: View {
