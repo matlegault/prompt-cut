@@ -19,10 +19,12 @@ class VideoEditManager: ObservableObject {
     @Published var previewImageURL: URL? = nil  // GIF / image output
     @Published var isAudioOnly: Bool = false     // audio-only output
     @Published var videoSize: CGSize? = nil
+    @Published var lastLog: String? = nil       // full ffmpeg output from last command
 
     private var history: [URL] = []
     private var redoStack: [URL] = []
     private var currentURL: URL? { history.last }
+    private var sourceBitrateKbps: Int?  // video stream bitrate of the loaded file
 
     /// The file that should be offered for saving — GIF/image uses previewImageURL, otherwise the video.
     var currentOutputURL: URL? { previewImageURL ?? currentURL }
@@ -31,6 +33,7 @@ class VideoEditManager: ObservableObject {
     private var timeObserver: Any?
     private var rateObserver: NSKeyValueObservation?
     private var loadSizeTask: Task<Void, Never>?
+    private var runningProcess: Process?
 
     init() {
         let base = FileManager.default.temporaryDirectory
@@ -64,6 +67,7 @@ class VideoEditManager: ObservableObject {
         previewImageURL = nil
         isAudioOnly = false
         videoSize = nil
+        sourceBitrateKbps = nil
 
         let ext = url.pathExtension.isEmpty ? "mp4" : url.pathExtension
         let initial = tempDir.appendingPathComponent("v0.\(ext)")
@@ -72,6 +76,7 @@ class VideoEditManager: ObservableObject {
             history = [initial]
             replacePlayer(url: initial)
             loadVideoSize(from: initial)
+            loadVideoBitrate(from: initial)
             isVideoLoaded = true
             hasUnsavedChanges = false
             loadedFilename = url.lastPathComponent
@@ -107,11 +112,12 @@ class VideoEditManager: ObservableObject {
         guard !trimmed.isEmpty else { return }
 
         isProcessing = true
+        wasCancelled = false
         progress = 0
         statusMessage = "Processing…"
 
         do {
-            let cmd = try CommandParser.parse(trimmed, inputPath: current.path)
+            let cmd = try CommandParser.parse(trimmed, inputPath: current.path, sourceBitrateKbps: sourceBitrateKbps)
 
             guard let ffmpegPath = findFFmpeg() else {
                 statusMessage = "ffmpeg not found. Run: brew install ffmpeg  (or add the binary to the app bundle)"
@@ -125,6 +131,8 @@ class VideoEditManager: ObservableObject {
                 let pct = min(timeSeconds / totalDuration, 1.0)
                 Task { @MainActor in self.progress = pct }
             }
+
+            lastLog = output
 
             if exitCode == 0 {
                 let produced = URL(fileURLWithPath: cmd.outputPath)
@@ -140,10 +148,14 @@ class VideoEditManager: ObservableObject {
                 updatePlayerState(for: stateURL)
                 hasUnsavedChanges = true
                 statusMessage = "Done!"
+            } else if wasCancelled {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: cmd.outputPath))
+                statusMessage = "Cancelled"
             } else {
                 statusMessage = "Error: \(extractError(output))"
             }
         } catch {
+            lastLog = nil
             statusMessage = error.localizedDescription ?? "Unknown error"
         }
 
@@ -170,6 +182,14 @@ class VideoEditManager: ObservableObject {
         hasUnsavedChanges = true
         updateState()
         statusMessage = "Redone"
+    }
+
+    private var wasCancelled = false
+
+    func cancelProcessing() {
+        guard isProcessing, let process = runningProcess, process.isRunning else { return }
+        wasCancelled = true
+        process.terminate()
     }
 
     func discardChanges() {
@@ -230,6 +250,17 @@ class VideoEditManager: ObservableObject {
             guard !Task.isCancelled, let size, let transform else { return }
             let transformed = size.applying(transform)
             videoSize = CGSize(width: abs(transformed.width), height: abs(transformed.height))
+        }
+    }
+
+    private func loadVideoBitrate(from url: URL) {
+        Task {
+            let asset = AVURLAsset(url: url)
+            guard let track = try? await asset.loadTracks(withMediaType: .video).first else { return }
+            let estimatedRate = try? await track.load(.estimatedDataRate) // bits per second
+            if let bps = estimatedRate, bps > 0 {
+                sourceBitrateKbps = Int(bps / 1000)
+            }
         }
     }
 
@@ -297,8 +328,9 @@ class VideoEditManager: ObservableObject {
         onProgress: (@Sendable (Double) -> Void)? = nil
     ) async -> (String, Int32) {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 let process = Process()
+                Task { @MainActor in self?.runningProcess = process }
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = args
                 process.currentDirectoryURL = directory
@@ -339,9 +371,11 @@ class VideoEditManager: ObservableObject {
                     let stdoutData = outPipe.fileHandleForReading.readDataToEndOfFile()
                     collectedOutput.append(stdoutData)
                     let output = String(data: collectedOutput, encoding: .utf8) ?? ""
+                    Task { @MainActor in self?.runningProcess = nil }
                     continuation.resume(returning: (output, process.terminationStatus))
                 } catch {
                     errPipe.fileHandleForReading.readabilityHandler = nil
+                    Task { @MainActor in self?.runningProcess = nil }
                     continuation.resume(returning: (error.localizedDescription, -1))
                 }
             }

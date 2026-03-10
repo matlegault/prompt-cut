@@ -95,6 +95,7 @@ struct ContentView: View {
     @State private var selectedSuggestionIndex: Int? = nil
     @State private var isScrubbing = false
     @State private var scrubTime: Double = 0
+    @State private var showLog = false
 
     private var exportContentType: UTType {
         switch editManager.currentOutputURL?.pathExtension.lowercased() {
@@ -193,12 +194,16 @@ struct ContentView: View {
 
                 Spacer()
 
-                Button("Discard") {
-                    editManager.discardChanges()
+                Button(editManager.isProcessing ? "Cancel" : "Discard") {
+                    if editManager.isProcessing {
+                        editManager.cancelProcessing()
+                    } else {
+                        editManager.discardChanges()
+                    }
                 }
-                .disabled(!editManager.hasUnsavedChanges)
+                .disabled(!editManager.hasUnsavedChanges && !editManager.isProcessing)
                 .foregroundStyle(.red)
-                .help("Discard all changes since last save")
+                .help(editManager.isProcessing ? "Cancel current operation" : "Discard all changes since last save")
 
                 Button("Save") {
                     saveFile()
@@ -274,6 +279,39 @@ struct ContentView: View {
         }
     }
 
+    private var logPopover: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("ffmpeg log")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    if let log = editManager.lastLog {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(log, forType: .string)
+                    }
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.plain)
+                .help("Copy log to clipboard")
+            }
+            .padding()
+
+            Divider()
+
+            ScrollView {
+                Text(editManager.lastLog ?? "")
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+        }
+        .frame(width: 500, height: 300)
+    }
+
     private var floatingBarContent: some View {
         VStack(spacing: 0) {
             // ── Playback controls (hidden for image/GIF outputs) ──────────
@@ -325,11 +363,20 @@ struct ContentView: View {
 
             // ── Status + cheat sheet ──────────────────────────────────────
             HStack {
-                Text(editManager.statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                Button {
+                    if editManager.lastLog != nil { showLog = true }
+                } label: {
+                    Text(editManager.statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .buttonStyle(.plain)
+                .help(editManager.lastLog != nil ? "Click to view ffmpeg log" : "")
+                .popover(isPresented: $showLog) {
+                    logPopover
+                }
 
                 Spacer()
 

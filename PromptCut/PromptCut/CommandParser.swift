@@ -24,7 +24,8 @@ enum ParseError: LocalizedError {
 /// The caller substitutes the "video" placeholder with the real file path before calling parse().
 enum CommandParser {
 
-    static func parse(_ raw: String, inputPath: String) throws -> FFmpegCommand {
+    /// - Parameter sourceBitrateKbps: video stream bitrate in kbps (used to match quality on re-encode).
+    static func parse(_ raw: String, inputPath: String, sourceBitrateKbps: Int? = nil) throws -> FFmpegCommand {
         let t = raw.trimmingCharacters(in: .whitespaces)
 
         // ── convert to gif ───────────────────────────────────────────────────
@@ -32,7 +33,7 @@ enum CommandParser {
             let out = outputPath(for: inputPath, ext: "gif")
             return cmd(["-i", inputPath,
                         "-vf", "fps=15,scale=480:-1:flags=lanczos",
-                        "-loop", "0", "-y", out])
+                        "-loop", "0", "-y", out], hwAccel: false)
         }
 
         // ── convert to [audio format] ────────────────────────────────────────
@@ -56,17 +57,19 @@ enum CommandParser {
            let sizeStr = t.capture(#"to\s+(\d+(?:\.\d+)?)\s*(?:mb|kb|gb)?"#),
            let size = Double(sizeStr) {
             let unit = t.contains("gb") ? "gb" : t.contains("kb") ? "kb" : "mb"
-            let crf: Int
+            // Pick a target video bitrate based on requested file size
+            let bitrate: String
             switch (unit, size) {
-            case ("mb", _) where size <= 5:  crf = 32
-            case ("mb", _) where size <= 10: crf = 28
-            case ("mb", _) where size <= 20: crf = 24
-            default:                         crf = 20
+            case ("kb", _):                  bitrate = "\(Int(size))k"
+            case ("gb", _):                  bitrate = "\(Int(size * 1000))M"
+            case ("mb", _) where size <= 5:  bitrate = "2M"
+            case ("mb", _) where size <= 10: bitrate = "4M"
+            case ("mb", _) where size <= 20: bitrate = "6M"
+            default:                         bitrate = "10M"
             }
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
             return cmd(["-i", inputPath,
-                        "-c:v", "libx264", "-crf", "\(crf)",
-                        "-preset", "medium",
+                        "-c:v", "h264_videotoolbox", "-b:v", bitrate,
                         "-c:a", "aac", "-b:a", "128k",
                         "-y", out])
         }
@@ -83,7 +86,7 @@ enum CommandParser {
         if t.matches(#"(?:resize|scale)\s+.+\s+to\s+\d+p"#),
            let h = t.capture(#"to\s+(\d+)p"#) {
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
-            return cmd(["-i", inputPath, "-vf", "scale=-2:\(h)", "-y", out])
+            return cmd(["-i", inputPath, "-vf", "scale=-2:\(h)", "-y", out], hwAccel: true, bitrateKbps: sourceBitrateKbps)
         }
 
         // ── resize to WxH ────────────────────────────────────────────────────
@@ -91,7 +94,7 @@ enum CommandParser {
            let w = t.capture(#"to\s+(\d+)x\d+"#),
            let h = t.capture(#"to\s+\d+x(\d+)"#) {
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
-            return cmd(["-i", inputPath, "-vf", "scale=\(w):\(h)", "-y", out])
+            return cmd(["-i", inputPath, "-vf", "scale=\(w):\(h)", "-y", out], hwAccel: true, bitrateKbps: sourceBitrateKbps)
         }
 
         // ── trim / cut ───────────────────────────────────────────────────────
@@ -115,7 +118,7 @@ enum CommandParser {
             return cmd(["-i", inputPath,
                         "-vf", "setpts=PTS/\(factor)",
                         "-af", chainedAtempo(factor),
-                        "-y", out])
+                        "-y", out], hwAccel: true, bitrateKbps: sourceBitrateKbps)
         }
 
         // ── slow down ────────────────────────────────────────────────────────
@@ -126,13 +129,13 @@ enum CommandParser {
             return cmd(["-i", inputPath,
                         "-vf", "setpts=PTS*\(factor)",
                         "-af", chainedAtempo(1.0 / factor),
-                        "-y", out])
+                        "-y", out], hwAccel: true, bitrateKbps: sourceBitrateKbps)
         }
 
         // ── reverse ──────────────────────────────────────────────────────────
         if t.matches(#"^reverse\s+"#) {
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
-            return cmd(["-i", inputPath, "-vf", "reverse", "-af", "areverse", "-y", out])
+            return cmd(["-i", inputPath, "-vf", "reverse", "-af", "areverse", "-y", out], hwAccel: true, bitrateKbps: sourceBitrateKbps)
         }
 
         // ── mute / remove audio ───────────────────────────────────────────────
@@ -160,7 +163,7 @@ enum CommandParser {
             default:  filter = "rotate=\(deg)*PI/180"
             }
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
-            return cmd(["-i", inputPath, "-vf", filter, "-y", out])
+            return cmd(["-i", inputPath, "-vf", filter, "-y", out], hwAccel: true, bitrateKbps: sourceBitrateKbps)
         }
 
         // ── crop to WxH ──────────────────────────────────────────────────────
@@ -168,14 +171,14 @@ enum CommandParser {
            let w = t.capture(#"to\s+(\d+)x\d+"#),
            let h = t.capture(#"to\s+\d+x(\d+)"#) {
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
-            return cmd(["-i", inputPath, "-vf", "crop=\(w):\(h)", "-y", out])
+            return cmd(["-i", inputPath, "-vf", "crop=\(w):\(h)", "-y", out], hwAccel: true, bitrateKbps: sourceBitrateKbps)
         }
 
         // ── fps ───────────────────────────────────────────────────────────────
         if t.matches(#"^(?:fps|framerate|change\s+fps)"#),
            let fps = t.capture(#"to\s+(\d+)"#) {
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
-            return cmd(["-i", inputPath, "-vf", "fps=\(fps)", "-y", out])
+            return cmd(["-i", inputPath, "-vf", "fps=\(fps)", "-y", out], hwAccel: true, bitrateKbps: sourceBitrateKbps)
         }
 
         // ── loop ─────────────────────────────────────────────────────────────
@@ -189,19 +192,19 @@ enum CommandParser {
         // ── stabilize ────────────────────────────────────────────────────────
         if t.matches(#"^(?:stabilize|stabilise)\s+"#) {
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
-            return cmd(["-i", inputPath, "-vf", "deshake", "-y", out])
+            return cmd(["-i", inputPath, "-vf", "deshake", "-y", out], hwAccel: true, bitrateKbps: sourceBitrateKbps)
         }
 
         // ── denoise ───────────────────────────────────────────────────────────
         if t.matches(#"^(?:denoise|reduce\s+noise)"#) {
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
-            return cmd(["-i", inputPath, "-vf", "hqdn3d", "-y", out])
+            return cmd(["-i", inputPath, "-vf", "hqdn3d", "-y", out], hwAccel: true, bitrateKbps: sourceBitrateKbps)
         }
 
         // ── grayscale / black and white ───────────────────────────────────────
         if t.matches(#"(?:grayscale|greyscale|black.and.white|\bbw\b)"#) {
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
-            return cmd(["-i", inputPath, "-vf", "format=gray", "-y", out])
+            return cmd(["-i", inputPath, "-vf", "format=gray", "-y", out], hwAccel: true, bitrateKbps: sourceBitrateKbps)
         }
 
         // ── flip ─────────────────────────────────────────────────────────────
@@ -209,7 +212,7 @@ enum CommandParser {
             let isHorizontal = t.contains("horiz") || t.hasSuffix(" h")
             let filter = isHorizontal ? "hflip" : "vflip"
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
-            return cmd(["-i", inputPath, "-vf", filter, "-y", out])
+            return cmd(["-i", inputPath, "-vf", filter, "-y", out], hwAccel: true, bitrateKbps: sourceBitrateKbps)
         }
 
         throw ParseError.unrecognized(raw)
@@ -217,8 +220,22 @@ enum CommandParser {
 
     // MARK: - Helpers
 
-    private static func cmd(_ args: [String]) -> FFmpegCommand {
-        FFmpegCommand(args: args, outputPath: args.last!)
+    /// Wraps args with `-threads 0` and, when re-encoding video, hardware acceleration via VideoToolbox.
+    /// Uses the source bitrate to preserve quality; falls back to 20 Mbps if unknown.
+    private static func cmd(_ args: [String], hwAccel: Bool = false, bitrateKbps: Int? = nil) -> FFmpegCommand {
+        var final_args = ["-threads", "0"] + args
+        if hwAccel, let yIdx = final_args.lastIndex(of: "-y") {
+            // VideoToolbox requires nv12 pixel format — append it to any existing -vf chain
+            if let vfIdx = final_args.firstIndex(of: "-vf"),
+               vfIdx + 1 < final_args.count {
+                final_args[vfIdx + 1] += ",format=nv12"
+            } else {
+                final_args.insert(contentsOf: ["-vf", "format=nv12"], at: yIdx)
+            }
+            let br = bitrateKbps.map { "\($0)k" } ?? "20M"
+            final_args.insert(contentsOf: ["-c:v", "h264_videotoolbox", "-b:v", br], at: final_args.lastIndex(of: "-y")!)
+        }
+        return FFmpegCommand(args: final_args, outputPath: final_args.last!)
     }
 
     private static func outputPath(for inputPath: String, ext: String) -> String {

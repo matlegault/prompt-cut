@@ -78,12 +78,6 @@ struct CheatSheetView: View {
                 .padding(.vertical, 4)
             }
 
-            Divider()
-
-            Text("Use **video** as the placeholder for the current file.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding()
         }
         .frame(width: 400, height: 480)
     }
