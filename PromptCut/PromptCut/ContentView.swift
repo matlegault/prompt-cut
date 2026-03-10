@@ -10,33 +10,28 @@ import UniformTypeIdentifiers
 // MARK: - Command templates for typeahead
 
 private let commandTemplates: [String] = [
-    "trim video from [start] to [end]",
-    "cut video from [start] to [end]",
+    "trim video from 0:00 to 0:30",
     "convert video to gif",
+    "convert video to gif original resolution",
     "convert video to mp4",
     "convert video to mp3",
-    "compress video to [size]mb",
+    "compress video to 10mb",
     "resize video to 720p",
     "resize video to 1080p",
     "resize video to 480p",
-    "resize video to [w]x[h]",
-    "scale video to 720p",
+    "resize video to 1280x720",
     "speed up video by 2x",
-    "speed up video by [n]x",
     "slow down video by 2x",
-    "slow down video by [n]x",
     "reverse video",
     "mute video",
-    "remove audio from video",
     "extract audio from video",
-    "thumbnail video at [time]",
-    "screenshot video at [time]",
+    "thumbnail video at 0:05",
     "rotate video by 90",
     "rotate video by 180",
     "rotate video by 270",
-    "crop video to [w]x[h]",
-    "fps video to [rate]",
-    "loop video [n] times",
+    "crop video to 1280x720",
+    "fps video to 30",
+    "loop video 3 times",
     "stabilize video",
     "denoise video",
     "grayscale video",
@@ -162,7 +157,9 @@ struct ContentView: View {
         }
         .ignoresSafeArea()
         .onChange(of: editManager.videoSize) { _, size in
-            if let size { resizeWindowToFit(size) } else { (NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first)?.resizeIncrements = NSSize(width: 1, height: 1) }
+            if let size {
+                resizeWindowToFit(size)
+            }
         }
         .onDrop(of: [UTType.movie], isTargeted: $isTargeted) { providers in
             loadDroppedVideo(from: providers)
@@ -361,35 +358,46 @@ struct ContentView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
 
-            // ── Status + cheat sheet ──────────────────────────────────────
-            HStack {
-                Button {
-                    if editManager.lastLog != nil { showLog = true }
-                } label: {
-                    Text(editManager.statusMessage)
+            // ── Status + file info + cheat sheet ─────────────────────────
+            ZStack {
+                // Centered file info
+                if let info = editManager.fileInfo {
+                    Text(info)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.tertiary)
                         .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .buttonStyle(.plain)
-                .help(editManager.lastLog != nil ? "Click to view ffmpeg log" : "")
-                .popover(isPresented: $showLog) {
-                    logPopover
                 }
 
-                Spacer()
+                // Left: status — Right: cheat sheet
+                HStack {
+                    Button {
+                        if editManager.lastLog != nil { showLog = true }
+                    } label: {
+                        Text(editManager.statusMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .buttonStyle(.plain)
+                    .help(editManager.lastLog != nil ? "Click to view ffmpeg log" : "")
+                    .popover(isPresented: $showLog) {
+                        logPopover
+                    }
 
-                Button {
-                    showCheatSheet = true
-                } label: {
-                    Label("Cheat Sheet", systemImage: "questionmark.circle")
-                        .labelStyle(.iconOnly)
-                }
-                .buttonStyle(.plain)
-                .help("Cheat Sheet")
-                .sheet(isPresented: $showCheatSheet) {
-                    CheatSheetView()
+                    Spacer()
+
+                    Button {
+                        showCheatSheet = true
+                    } label: {
+                        Label("Cheat Sheet", systemImage: "questionmark.circle")
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Cheat Sheet")
+                    .sheet(isPresented: $showCheatSheet) {
+                        CheatSheetView()
+                    }
                 }
             }
             .padding(.horizontal, 14)
@@ -520,6 +528,8 @@ struct ContentView: View {
             x: floor(currentFrame.midX - newWidth / 2),
             y: currentFrame.minY
         )
+        // Allow the window to shrink small — the floating bar overlays on top
+        window.contentMinSize = NSSize(width: 200, height: 200)
         window.contentAspectRatio = videoSize
         window.setFrame(NSRect(origin: newOrigin, size: newSize), display: true, animate: true)
     }

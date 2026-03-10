@@ -19,7 +19,9 @@ class VideoEditManager: ObservableObject {
     @Published var previewImageURL: URL? = nil  // GIF / image output
     @Published var isAudioOnly: Bool = false     // audio-only output
     @Published var videoSize: CGSize? = nil
+    @Published var videoFPS: Double? = nil
     @Published var lastLog: String? = nil       // full ffmpeg output from last command
+    @Published var fileInfo: String? = nil        // e.g. "1920×1080 · 30fps · 12.4 MB"
 
     private var history: [URL] = []
     private var redoStack: [URL] = []
@@ -67,6 +69,7 @@ class VideoEditManager: ObservableObject {
         previewImageURL = nil
         isAudioOnly = false
         videoSize = nil
+        videoFPS = nil
         sourceBitrateKbps = nil
 
         let ext = url.pathExtension.isEmpty ? "mp4" : url.pathExtension
@@ -117,7 +120,7 @@ class VideoEditManager: ObservableObject {
         statusMessage = "Processing…"
 
         do {
-            let cmd = try CommandParser.parse(trimmed, inputPath: current.path, sourceBitrateKbps: sourceBitrateKbps)
+            let cmd = try CommandParser.parse(trimmed, inputPath: current.path, sourceBitrateKbps: sourceBitrateKbps, durationSeconds: duration)
 
             guard let ffmpegPath = findFFmpeg() else {
                 statusMessage = "ffmpeg not found. Run: brew install ffmpeg  (or add the binary to the app bundle)"
@@ -230,12 +233,20 @@ class VideoEditManager: ObservableObject {
         if Self.imageFormats.contains(ext) {
             previewImageURL = url
             isAudioOnly = false
+            videoFPS = nil
             if let img = NSImage(contentsOf: url) { videoSize = img.size }
+            updateFileInfo(for: url)
         } else {
             replacePlayer(url: url)
             previewImageURL = nil
             isAudioOnly = Self.audioFormats.contains(ext)
-            if !isAudioOnly { loadVideoSize(from: url) }
+            if !isAudioOnly {
+                loadVideoSize(from: url)
+            } else {
+                videoSize = nil
+                videoFPS = nil
+                updateFileInfo(for: url)
+            }
         }
     }
 
@@ -247,9 +258,12 @@ class VideoEditManager: ObservableObject {
                   !Task.isCancelled else { return }
             let size = try? await track.load(.naturalSize)
             let transform = try? await track.load(.preferredTransform)
+            let fps = try? await track.load(.nominalFrameRate)
             guard !Task.isCancelled, let size, let transform else { return }
             let transformed = size.applying(transform)
             videoSize = CGSize(width: abs(transformed.width), height: abs(transformed.height))
+            if let fps, fps > 0 { videoFPS = Double(fps) }
+            updateFileInfo(for: url)
         }
     }
 
@@ -304,6 +318,31 @@ class VideoEditManager: ObservableObject {
     private func updateState() {
         canUndo = history.count > 1
         canRedo = !redoStack.isEmpty
+    }
+
+    private func updateFileInfo(for url: URL) {
+        var parts: [String] = []
+        if let size = videoSize {
+            parts.append("\(Int(size.width))×\(Int(size.height))")
+        }
+        if let fps = videoFPS {
+            let rounded = fps.rounded()
+            parts.append("\(Int(rounded))fps")
+        }
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let bytes = attrs[.size] as? Int64 {
+            parts.append(Self.formatBytes(bytes))
+        }
+        fileInfo = parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private static func formatBytes(_ bytes: Int64) -> String {
+        let gb = Double(bytes) / 1_073_741_824
+        if gb >= 1 { return String(format: "%.1f GB", gb) }
+        let mb = Double(bytes) / 1_048_576
+        if mb >= 1 { return String(format: "%.1f MB", mb) }
+        let kb = Double(bytes) / 1024
+        return String(format: "%.0f KB", kb)
     }
 
     private func findFFmpeg() -> String? {

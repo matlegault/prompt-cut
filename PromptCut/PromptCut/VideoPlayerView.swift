@@ -22,15 +22,24 @@ struct VideoPlayerView: NSViewRepresentable {
 struct ImagePreviewView: NSViewRepresentable {
     let url: URL
 
-    func makeNSView(context: Context) -> NSImageView {
-        let view = NSImageView()
+    func makeNSView(context: Context) -> FlexibleImageView {
+        let view = FlexibleImageView()
         view.animates = true
         view.imageScaling = .scaleProportionallyUpOrDown
         view.image = NSImage(contentsOf: url)
         return view
     }
 
-    func updateNSView(_ nsView: NSImageView, context: Context) {
+    func updateNSView(_ nsView: FlexibleImageView, context: Context) {
         nsView.image = NSImage(contentsOf: url)
+    }
+}
+
+/// NSImageView subclass that doesn't impose a minimum size from its image.
+/// Without this, the intrinsic content size equals the image's pixel size,
+/// which prevents the window from shrinking below it.
+final class FlexibleImageView: NSImageView {
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
     }
 }

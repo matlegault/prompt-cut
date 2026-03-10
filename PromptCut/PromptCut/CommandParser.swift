@@ -20,35 +20,32 @@ enum ParseError: LocalizedError {
 // MARK: - Parser
 
 /// Translates plain-English commands into ffmpeg arguments.
-/// Mirrors the pattern set from ezff (https://www.npmjs.com/package/ezff).
 /// The caller substitutes the "video" placeholder with the real file path before calling parse().
 enum CommandParser {
 
     /// - Parameter sourceBitrateKbps: video stream bitrate in kbps (used to match quality on re-encode).
-    static func parse(_ raw: String, inputPath: String, sourceBitrateKbps: Int? = nil) throws -> FFmpegCommand {
+    /// - Parameter durationSeconds: total duration in seconds (used to calculate target bitrate for compression).
+    static func parse(_ raw: String, inputPath: String, sourceBitrateKbps: Int? = nil, durationSeconds: Double? = nil) throws -> FFmpegCommand {
         let t = raw.trimmingCharacters(in: .whitespaces)
 
-        // ── convert to gif ───────────────────────────────────────────────────
+        // ── convert to gif / audio / video format ────────────────────────────
         if t.matches(#"^gif\s+"#) || (t.contains("convert") && t.contains("gif")) {
             let out = outputPath(for: inputPath, ext: "gif")
+            let original = t.contains("original")
+            let filters = original
+                ? "split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=sierra2_4a"
+                : "fps=15,scale='min(480,iw)':-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=sierra2_4a"
             return cmd(["-i", inputPath,
-                        "-vf", "fps=15,scale=480:-1:flags=lanczos",
+                        "-filter_complex", filters,
                         "-loop", "0", "-y", out], hwAccel: false)
         }
 
-        // ── convert to [audio format] ────────────────────────────────────────
-        let audioFormats = ["mp3","wav","aac","flac","ogg","m4a"]
-        if t.matches(#"^convert\s+.+\s+to\s+(\w+)$"#),
-           let fmt = t.capture(#"to\s+(\w+)$"#),
-           audioFormats.contains(fmt) {
+        if t.matches(#"^convert\s+.+\s+to\s+(\w+)"#),
+           let fmt = t.capture(#"to\s+(\w+)"#) {
             let out = outputPath(for: inputPath, ext: fmt)
-            return cmd(["-i", inputPath, "-vn", "-y", out])
-        }
-
-        // ── convert to [video format] ────────────────────────────────────────
-        if t.matches(#"^convert\s+.+\s+to\s+(\w+)$"#),
-           let fmt = t.capture(#"to\s+(\w+)$"#) {
-            let out = outputPath(for: inputPath, ext: fmt)
+            if Self.audioFormats.contains(fmt) {
+                return cmd(["-i", inputPath, "-vn", "-y", out])
+            }
             return cmd(["-i", inputPath, "-y", out])
         }
 
@@ -56,21 +53,91 @@ enum CommandParser {
         if t.matches(#"^compress\s+.+\s+to\s+\d"#),
            let sizeStr = t.capture(#"to\s+(\d+(?:\.\d+)?)\s*(?:mb|kb|gb)?"#),
            let size = Double(sizeStr) {
+            let ext = URL(fileURLWithPath: inputPath).pathExtension
+            let out = outputPath(for: inputPath, ext: ext)
             let unit = t.contains("gb") ? "gb" : t.contains("kb") ? "kb" : "mb"
-            // Pick a target video bitrate based on requested file size
-            let bitrate: String
-            switch (unit, size) {
-            case ("kb", _):                  bitrate = "\(Int(size))k"
-            case ("gb", _):                  bitrate = "\(Int(size * 1000))M"
-            case ("mb", _) where size <= 5:  bitrate = "2M"
-            case ("mb", _) where size <= 10: bitrate = "4M"
-            case ("mb", _) where size <= 20: bitrate = "6M"
-            default:                         bitrate = "10M"
+
+            // GIF: dynamically compress by adjusting fps, resolution, and colors
+            // based on the ratio of actual file size to target size.
+            if ext.lowercased() == "gif" {
+                let fileSize = (try? FileManager.default.attributesOfItem(atPath: inputPath)[.size] as? Int64) ?? 0
+                let targetBytes: Int64
+                switch unit {
+                case "kb": targetBytes = Int64(size * 1024)
+                case "gb": targetBytes = Int64(size * 1_073_741_824)
+                default:   targetBytes = Int64(size * 1_048_576)
+                }
+
+                let ratio = fileSize > 0 ? Double(fileSize) / Double(targetBytes) : 2.0
+
+                if ratio <= 1.0 {
+                    // Already under target — just re-encode with full quality
+                    let filters = "split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=sierra2_4a"
+                    return cmd(["-i", inputPath,
+                                "-filter_complex", filters,
+                                "-loop", "0", "-y", out])
+                }
+
+                // Add a 25% safety margin so we land under the target
+                let R = ratio * 1.25
+
+                // GIF size ≈ k × fps × width × height × log2(colors)
+                // Distribute reduction across 3 levers: fps, scale² (area), colors
+                // Each lever gets an equal share: factor^(1/3) of the total reduction
+                let fpsFactor   = 1.0 / pow(R, 1.0 / 3.0)
+                let scaleFactor = 1.0 / pow(R, 1.0 / 6.0)  // sqrt of (1/R)^(1/3) since area is quadratic
+                let colorFactor = 1.0 / pow(R, 1.0 / 3.0)
+
+                let targetFps = max(5, min(30, Int(round(20.0 * fpsFactor))))
+                let colors    = max(16, min(256, Int(round(256.0 * colorFactor))))
+
+                var filters = "fps=\(targetFps)"
+                if scaleFactor < 0.95 {
+                    let pct = String(format: "%.2f", scaleFactor)
+                    filters += ",scale='trunc(iw*\(pct)/2)*2':'trunc(ih*\(pct)/2)*2':flags=lanczos"
+                }
+                filters += ",split[s0][s1];[s0]palettegen=max_colors=\(colors)[p];[s1][p]paletteuse=dither=sierra2_4a"
+
+                return cmd(["-i", inputPath,
+                            "-filter_complex", filters,
+                            "-loop", "0", "-y", out])
             }
-            let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
+            // Video: calculate bitrate from target size and duration
+            let targetBytes: Double
+            switch unit {
+            case "kb": targetBytes = size * 1024
+            case "gb": targetBytes = size * 1_073_741_824
+            default:   targetBytes = size * 1_048_576
+            }
+
+            let audioBitrateKbps = 128.0
+            let dur = durationSeconds ?? 0
+
+            let bitrate: String
+            if dur > 0 {
+                // total bitrate = (targetBytes × 8) / duration, then subtract audio
+                let totalBitrateKbps = (targetBytes * 8.0) / (dur * 1000.0)
+                let videoBitrateKbps = max(100, totalBitrateKbps - audioBitrateKbps)
+                if videoBitrateKbps >= 1000 {
+                    bitrate = "\(Int(round(videoBitrateKbps / 1000.0)))M"
+                } else {
+                    bitrate = "\(Int(round(videoBitrateKbps)))k"
+                }
+            } else {
+                // Fallback if duration is unknown — use source bitrate scaled by file size ratio
+                let fileSize = (try? FileManager.default.attributesOfItem(atPath: inputPath)[.size] as? Int64).flatMap { Double($0) } ?? 0
+                if fileSize > 0, let srcBr = sourceBitrateKbps {
+                    let ratio = targetBytes / fileSize
+                    let videoBitrateKbps = max(100, Double(srcBr) * ratio)
+                    bitrate = videoBitrateKbps >= 1000 ? "\(Int(round(videoBitrateKbps / 1000.0)))M" : "\(Int(round(videoBitrateKbps)))k"
+                } else {
+                    bitrate = "2M"
+                }
+            }
+
             return cmd(["-i", inputPath,
                         "-c:v", "h264_videotoolbox", "-b:v", bitrate,
-                        "-c:a", "aac", "-b:a", "128k",
+                        "-c:a", "aac", "-b:a", "\(Int(audioBitrateKbps))k",
                         "-y", out])
         }
 
@@ -90,7 +157,7 @@ enum CommandParser {
         }
 
         // ── resize to WxH ────────────────────────────────────────────────────
-        if t.matches(#"resize\s+.+\s+to\s+\d+x\d+"#),
+        if t.matches(#"(?:resize|scale)\s+.+\s+to\s+\d+x\d+"#),
            let w = t.capture(#"to\s+(\d+)x\d+"#),
            let h = t.capture(#"to\s+\d+x(\d+)"#) {
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
@@ -202,7 +269,7 @@ enum CommandParser {
         }
 
         // ── grayscale / black and white ───────────────────────────────────────
-        if t.matches(#"(?:grayscale|greyscale|black.and.white|\bbw\b)"#) {
+        if t.matches(#"^(?:grayscale|greyscale|black.and.white|bw\b)"#) {
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
             return cmd(["-i", inputPath, "-vf", "format=gray", "-y", out], hwAccel: true, bitrateKbps: sourceBitrateKbps)
         }
@@ -220,11 +287,17 @@ enum CommandParser {
 
     // MARK: - Helpers
 
+    private static let audioFormats: Set<String> = ["mp3", "wav", "aac", "flac", "ogg", "m4a"]
+
     /// Wraps args with `-threads 0` and, when re-encoding video, hardware acceleration via VideoToolbox.
     /// Uses the source bitrate to preserve quality; falls back to 20 Mbps if unknown.
+    private static let gifFormats: Set<String> = ["gif"]
+
     private static func cmd(_ args: [String], hwAccel: Bool = false, bitrateKbps: Int? = nil) -> FFmpegCommand {
         var final_args = ["-threads", "0"] + args
-        if hwAccel, let yIdx = final_args.lastIndex(of: "-y") {
+        let outputExt = URL(fileURLWithPath: final_args.last ?? "").pathExtension.lowercased()
+        // VideoToolbox can't encode GIFs — skip hw accel for image outputs
+        if hwAccel, !gifFormats.contains(outputExt), let yIdx = final_args.lastIndex(of: "-y") {
             // VideoToolbox requires nv12 pixel format — append it to any existing -vf chain
             if let vfIdx = final_args.firstIndex(of: "-vf"),
                vfIdx + 1 < final_args.count {
