@@ -558,12 +558,22 @@ struct ContentView: View {
         guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.movie.identifier) }) else {
             return false
         }
-        provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, _ in
-            guard let url else { return }
+        provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, error in
+            guard let url else {
+                if let error {
+                    Task { @MainActor in editManager.statusMessage = "Drop failed: \(error.localizedDescription)" }
+                }
+                return
+            }
+            // Copy to a unique temp path so loadVideo can access it
             let dest = FileManager.default.temporaryDirectory
-                .appendingPathComponent(url.lastPathComponent)
-            try? FileManager.default.copyItem(at: url, to: dest)
-            Task { @MainActor in editManager.loadVideo(url: dest) }
+                .appendingPathComponent("\(UUID().uuidString)_\(url.lastPathComponent)")
+            do {
+                try FileManager.default.copyItem(at: url, to: dest)
+                Task { @MainActor in editManager.loadVideo(url: dest) }
+            } catch {
+                Task { @MainActor in editManager.statusMessage = "Drop failed: \(error.localizedDescription)" }
+            }
         }
         return true
     }

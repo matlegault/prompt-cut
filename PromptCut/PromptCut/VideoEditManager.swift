@@ -36,6 +36,7 @@ class VideoEditManager: ObservableObject {
     private var rateObserver: NSKeyValueObservation?
     private var loadSizeTask: Task<Void, Never>?
     private var runningProcess: Process?
+    private var itemStatusObserver: NSKeyValueObservation?
 
     init() {
         let base = FileManager.default.temporaryDirectory
@@ -86,6 +87,11 @@ class VideoEditManager: ObservableObject {
             updateState()
             statusMessage = "Ready — type a command to start"
         } catch {
+            player?.pause()
+            player = nil
+            isVideoLoaded = false
+            previewImageURL = nil
+            isAudioOnly = false
             statusMessage = "Failed to load: \(error.localizedDescription)"
         }
     }
@@ -302,16 +308,17 @@ class VideoEditManager: ObservableObject {
         }
 
         // Duration + seek-to-start when item becomes ready
-        var token: NSKeyValueObservation?
-        token = item.observe(\.status, options: .new) { [weak self] item, _ in
+        itemStatusObserver?.invalidate()
+        itemStatusObserver = item.observe(\.status, options: .new) { [weak self] item, _ in
             guard item.status == .readyToPlay else { return }
             DispatchQueue.main.async {
                 let d = item.duration.seconds
                 if d.isFinite && d > 0 { self?.duration = d }
                 self?.currentTime = 0
                 self?.player?.seek(to: .zero)
+                self?.itemStatusObserver?.invalidate()
+                self?.itemStatusObserver = nil
             }
-            token?.invalidate()
         }
     }
 

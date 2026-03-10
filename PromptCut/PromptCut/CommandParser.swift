@@ -52,7 +52,7 @@ enum CommandParser {
         // ── compress to [N] mb/kb/gb ─────────────────────────────────────────
         if t.matches(#"^compress\s+.+\s+to\s+\d"#),
            let sizeStr = t.capture(#"to\s+(\d+(?:\.\d+)?)\s*(?:mb|kb|gb)?"#),
-           let size = Double(sizeStr) {
+           let size = Double(sizeStr), size > 0 {
             let ext = URL(fileURLWithPath: inputPath).pathExtension
             let out = outputPath(for: inputPath, ext: ext)
             let unit = t.contains("gb") ? "gb" : t.contains("kb") ? "kb" : "mb"
@@ -169,11 +169,16 @@ enum CommandParser {
         if t.matches(#"^(?:trim|cut)\s+"#),
            let start = t.capture(#"from\s+([\d:\.hms]+)"#),
            let end   = t.capture(#"to\s+([\d:\.hms]+)"#) {
+            let startSeconds = timeToSeconds(start)
+            let endSeconds   = timeToSeconds(end)
+            guard endSeconds > startSeconds else {
+                throw ParseError.unrecognized("End time must be after start time")
+            }
             let out = outputPath(for: inputPath, ext: URL(fileURLWithPath: inputPath).pathExtension)
             // -ss before -i = input seeking: snaps to a keyframe so output starts clean (no black frames).
             // Use -t (duration) instead of -to because with input seeking -to is relative to output start.
-            let startSec   = String(format: "%.3f", timeToSeconds(start))
-            let duration   = String(format: "%.3f", timeToSeconds(end) - timeToSeconds(start))
+            let startSec   = String(format: "%.3f", startSeconds)
+            let duration   = String(format: "%.3f", endSeconds - startSeconds)
             return cmd(["-ss", startSec, "-i", inputPath, "-t", duration, "-c", "copy", "-reset_timestamps", "1", "-y", out])
         }
 
