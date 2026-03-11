@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		4E1118102F62307300CD66E4 /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = 4E11180F2F62307300CD66E4 /* PostHog */; };
 		4EAF7D202F5CBDF200E54620 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 4EAF7D1F2F5CBDF200E54620 /* AppIcon.icon */; };
 /* End PBXBuildFile section */
 
@@ -29,6 +30,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4E1118102F62307300CD66E4 /* PostHog in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -74,6 +76,7 @@
 			);
 			name = PromptCut;
 			packageProductDependencies = (
+				4E11180F2F62307300CD66E4 /* PostHog */,
 			);
 			productName = PromptCut;
 			productReference = 4EAF7CDB2F5C914E00E54620 /* PromptCut.app */;
@@ -103,6 +106,9 @@
 			);
 			mainGroup = 4EAF7CD22F5C914E00E54620;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				4E11180E2F62307300CD66E4 /* XCRemoteSwiftPackageReference "posthog-ios" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4EAF7CDC2F5C914E00E54620 /* Products */;
 			projectDirPath = "";
@@ -303,7 +309,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 3;
+				MARKETING_VERSION = 3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = coderlife.PromptCut;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -351,7 +357,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 3;
+				MARKETING_VERSION = 3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = coderlife.PromptCut;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -392,6 +398,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		4E11180E2F62307300CD66E4 /* XCRemoteSwiftPackageReference "posthog-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/PostHog/posthog-ios";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.46.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4E11180F2F62307300CD66E4 /* PostHog */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4E11180E2F62307300CD66E4 /* XCRemoteSwiftPackageReference "posthog-ios" */;
+			productName = PostHog;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4EAF7CD32F5C914E00E54620 /* Project object */;
 }

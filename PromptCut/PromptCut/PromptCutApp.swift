@@ -7,6 +7,11 @@ import SwiftUI
 
 @main
 struct PromptCutApp: App {
+    init() {
+        Analytics.setup()
+        Analytics.trackAppLaunched()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()

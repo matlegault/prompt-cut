@@ -107,6 +107,16 @@ class VideoEditManager: ObservableObject {
             resetClipsToCurrentVideo()
             updateState()
             statusMessage = "Ready — type a command to start"
+
+            // Analytics: track video load with metadata only
+            let fileSize = (try? FileManager.default.attributesOfItem(atPath: initial.path)[.size] as? Int64) ?? nil
+            Analytics.trackVideoLoaded(
+                fileExtension: ext,
+                fileSizeBytes: fileSize,
+                durationSeconds: nil,  // duration loads async
+                resolution: videoSize,
+                fps: videoFPS
+            )
         } catch {
             player?.pause()
             player = nil
@@ -114,6 +124,7 @@ class VideoEditManager: ObservableObject {
             previewImageURL = nil
             isAudioOnly = false
             statusMessage = "Failed to load: \(error.localizedDescription)"
+            Analytics.trackError(type: "load_failed")
         }
     }
 
@@ -145,6 +156,8 @@ class VideoEditManager: ObservableObject {
         wasCancelled = false
         progress = 0
         statusMessage = "Processing…"
+        let commandCategory = Analytics.commandCategory(from: trimmed)
+        let commandStart = CFAbsoluteTimeGetCurrent()
 
         do {
             let cmd = try CommandParser.parse(trimmed, inputPath: current.path, sourceBitrateKbps: sourceBitrateKbps, durationSeconds: duration)
@@ -178,15 +191,20 @@ class VideoEditManager: ObservableObject {
                 updatePlayerState(for: stateURL)
                 hasUnsavedChanges = true
                 statusMessage = "Done!"
+                let elapsed = CFAbsoluteTimeGetCurrent() - commandStart
+                Analytics.trackCommandExecuted(commandType: commandCategory, success: true, processingTimeSeconds: elapsed)
             } else if wasCancelled {
                 try? FileManager.default.removeItem(at: URL(fileURLWithPath: cmd.outputPath))
                 statusMessage = "Cancelled"
+                Analytics.trackCancelProcessing()
             } else {
                 statusMessage = "Error: \(extractError(output))"
+                Analytics.trackCommandExecuted(commandType: commandCategory, success: false, processingTimeSeconds: nil)
             }
         } catch {
             lastLog = nil
             statusMessage = error.localizedDescription ?? "Unknown error"
+            Analytics.trackError(type: "parse_failed")
         }
 
         isProcessing = false
@@ -203,6 +221,7 @@ class VideoEditManager: ObservableObject {
         resetClipsToCurrentVideo()
         updateState()
         statusMessage = "Undone"
+        Analytics.trackUndo()
     }
 
     func redo() {
@@ -214,6 +233,7 @@ class VideoEditManager: ObservableObject {
         resetClipsToCurrentVideo()
         updateState()
         statusMessage = "Redone"
+        Analytics.trackRedo()
     }
 
     private var wasCancelled = false
@@ -250,6 +270,7 @@ class VideoEditManager: ObservableObject {
         canUndo = false
         canRedo = false
         statusMessage = "Load a video to get started"
+        Analytics.trackStartOver()
     }
 
     func discardChanges() {
@@ -263,6 +284,7 @@ class VideoEditManager: ObservableObject {
         resetClipsToCurrentVideo()
         updateState()
         statusMessage = "Changes discarded"
+        Analytics.trackDiscard()
     }
 
     func markSaved() {
@@ -278,6 +300,9 @@ class VideoEditManager: ObservableObject {
         try FileManager.default.copyItem(at: current, to: url)
         hasUnsavedChanges = false
         statusMessage = "Saved!"
+
+        let savedSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? nil
+        Analytics.trackFileSaved(outputFormat: url.pathExtension, fileSizeBytes: savedSize)
     }
 
     // MARK: - Merge / Timeline
@@ -311,6 +336,7 @@ class VideoEditManager: ObservableObject {
         }
 
         statusMessage = "Added clip — \(clips.count) clips in timeline"
+        Analytics.trackClipAdded(clipCount: clips.count)
     }
 
     func removeClip(id: UUID) {
@@ -353,6 +379,8 @@ class VideoEditManager: ObservableObject {
         wasCancelled = false
         progress = 0
         statusMessage = "Merging \(clips.count) clips…"
+        let mergeClipCount = clips.count
+        let mergeStart = CFAbsoluteTimeGetCurrent()
 
         let outputFile = tempDir.appendingPathComponent("merged_output.mp4")
         try? FileManager.default.removeItem(at: outputFile)
@@ -434,11 +462,15 @@ class VideoEditManager: ObservableObject {
 
         if exitCode == 0 {
             finishMerge(outputFile: outputFile)
+            let elapsed = CFAbsoluteTimeGetCurrent() - mergeStart
+            Analytics.trackMergeExecuted(clipCount: mergeClipCount, success: true, processingTimeSeconds: elapsed)
         } else if wasCancelled {
             try? FileManager.default.removeItem(at: outputFile)
             statusMessage = "Cancelled"
+            Analytics.trackCancelProcessing()
         } else {
             statusMessage = "Merge failed: \(extractError(output))"
+            Analytics.trackMergeExecuted(clipCount: mergeClipCount, success: false, processingTimeSeconds: nil)
         }
 
         isProcessing = false

@@ -407,6 +407,7 @@ struct ContentView: View {
 
                     Button {
                         showCheatSheet = true
+                        Analytics.trackCheatSheetOpened()
                     } label: {
                         Label("Cheat Sheet", systemImage: "questionmark.circle")
                             .labelStyle(.iconOnly)
