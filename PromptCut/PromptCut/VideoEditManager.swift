@@ -292,12 +292,11 @@ class VideoEditManager: ObservableObject {
         statusMessage = "Saved!"
     }
 
-    func saveResult(to url: URL) throws {
-        guard let current = currentOutputURL else { return }
+    func saveResult(from source: URL, to url: URL) throws {
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
-        try FileManager.default.copyItem(at: current, to: url)
+        try FileManager.default.copyItem(at: source, to: url)
         hasUnsavedChanges = false
         statusMessage = "Saved!"
 

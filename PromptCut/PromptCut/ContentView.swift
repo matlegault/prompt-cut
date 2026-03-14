@@ -563,14 +563,15 @@ struct ContentView: View {
 
     private func saveFile() {
         guard let outputURL = editManager.currentOutputURL else { return }
+        let contentType = exportContentType  // capture before async gap
         Task { @MainActor in
             let panel = NSSavePanel()
             let baseName = URL(fileURLWithPath: editManager.loadedFilename).deletingPathExtension().lastPathComponent
             panel.nameFieldStringValue = "\(baseName)-edited.\(outputURL.pathExtension)"
-            panel.allowedContentTypes = [exportContentType]
+            panel.allowedContentTypes = [contentType]
             let response = await panel.begin()
             guard response == .OK, let dest = panel.url else { return }
-            try? editManager.saveResult(to: dest)
+            try? editManager.saveResult(from: outputURL, to: dest)
         }
     }
 
